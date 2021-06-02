@@ -1,0 +1,105 @@
+---
+title: "Scrape FlashBack"
+author: "Tangbin Chen"
+date: "`r format(Sys.time(), '%d %m, %Y')`"
+bibliography: My Library.bib
+output: 
+  bookdown::pdf_document2:
+    number_sections: true
+    keep_tex: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE, error = FALSE, results=FALSE,eval=FALSE)
+library(tidyverse)
+library(stargazer)
+library(httr)
+library(XML)
+library(rjson)
+```
+
+
+```{r}
+# f=30 stands for the topic "Medier och journalistik"(media and journalism)
+MakeUrl <- function(f,sort="lastpost"){
+  require(XML)
+  require(httr)
+  urls <- list()
+  init <- paste0("https://www.flashback.org/forumdisplay.php?f=",f,"&daysprune=-1&order=desc&sort=",sort)
+  response <- GET(init, user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/81.0.4044.129 Safari/537.36"))
+  if(status_code(response) == 200){
+    parse <- htmlParse(response, encoding = "UTF-8")
+    # find total pages
+    totalpage <- as.integer(xpathSApply(parse,"//span/@data-total-pages")[1])
+    for(i in 1:totalpage){
+      urls[i] <- paste0(init,"&page=",i)
+    }
+  }else{
+    urls <- NULL
+    cat(paste0("Error in requests: response status is ",status_code(response)))
+  }
+  return(urls)
+}
+
+# Now create a function to retrieve the title list of a certain topic
+TitleList <- function(url){
+  require(XML)
+  require(httr)
+  require(stringr)
+  require(stringi)
+  titlelist <- list()
+  today <- Sys.Date()
+  response <- GET(url, user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/81.0.4044.129 Safari/537.36"))
+  Sys.sleep(runif(1,2,4))
+  # change the encoding since the page is in swedish :(
+  parse <- htmlParse(response, encoding = "UTF-8")
+  # scrape by nodes
+  thread <- xpathSApply(parse,"//table[@id='threadslist']/tbody/tr")
+  title <- sapply(thread, xpathSApply, "./td[@class='td_title']")
+  titlelist$id <- sapply(title, xpathSApply, "./@id")
+  titlelist$id <- str_extract(titlelist$id, '[\\d]+')
+  titlelist$title <- sapply(title, xpathSApply, ".//a[starts-with(@id,'thread')]", xmlValue) %>% as.character()
+  titlelist$started.user <- sapply(title, xpathSApply, "./span/span"，xmlValue) %>% as.character()
+  titlelist$started.id <- sapply(title, xpathSApply, "./span/span/@onclick")
+  titlelist$started.id <- str_extract(titlelist$started.id, "/u\\d+")
+  # this one contains the numbers of replies and reads, need to be splited using regex
+  replies <- sapply(thread, xpathSApply, "./td[starts-with(@class,'td_replies')]", xmlValue)
+  titlelist$replies <- as.integer(t(data.frame(str_split(gsub("\\W","",replies),"\\D+")))[,1])
+  titlelist$views <- as.integer(t(data.frame(str_split(gsub("\\W","",replies),"\\D+")))[,2])
+  # the date and time of the last reply, it is a bit messy, so clean it
+  titlelist$last.reply <- sapply(thread, xpathSApply, "./td[starts-with(@class,'td_last')]/div[1]",xmlValue)
+  titlelist$last.reply <- gsub("Igår",today-1,titlelist$last.reply)
+  titlelist$last.reply <- gsub("Idag",today,titlelist$last.reply)
+  titlelist$last.reply <- str_extract(titlelist$last.reply,"(\\d{4}-\\d\\d-\\d\\d\\s\\d{2}:\\d{2})")
+  # this infomation is not so important and as we cannot have their id, so consider dropping this column
+  titlelist$last.reply.user <- sapply(thread, xpathSApply, "./td[starts-with(@class,'td_last')]/div[2]/span/a",xmlValue) %>% as.character()
+  return(as.data.frame(titlelist))
+}
+```
+
+```{r ScrapeNow}
+# insert a simple progress bar
+cat('============ Get a cup of tea :p ============\n')
+j <- 0
+start <- Sys.time()
+titlelist_487 <- data.frame()
+urls <- MakeUrl(f="487")
+errors_ttl <- c()
+for(url in urls){
+  j <- j+1  
+  # one vector to store the urls that has an error response
+  title <- try(TitleList(url),FALSE)
+  if(class(title) != "try-error"){
+      titlelist_487 <- rbind(titlelist_487,title)
+  }else{
+    errors_ttl <- c(errors_ttl,url)
+    cat(paste("\nThe error url: ", url))
+  }
+  # no waiting in uncertainties
+  c = j / length(urls) * 100
+  cat(paste0(round(c,1),"% has been retrieved  Duration:", round(Sys.time() - start,2),"s"),'\r')
+}
+cat('\n========= Grattis! Everything Works! =========')
+# save the data
+write_csv(titlelist_487,"titlelist_487.csv")
+```
